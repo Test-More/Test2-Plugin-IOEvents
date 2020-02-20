@@ -7,56 +7,45 @@ our $VERSION = '0.000002';
 use Test2::API qw/context/;
 use Carp qw/croak/;
 
-my $IS_END;
-END { $IS_END = 1 };
-
 sub TIEHANDLE {
     my $class = shift;
-    my ($name) = @_;
+    my ($name, $fn, $fh) = @_;
 
-    my ($fh, $fn);
-    if ($name eq 'STDOUT') {
-        ($fn, $fh) = _move_io_fd(\*STDOUT);
-    }
-    elsif ($name eq 'STDERR') {
-        ($fn, $fh) = _move_io_fd(\*STDERR);
-    }
-    else {
-        croak "Invalid name: $name\n";
+    unless ($fn && $fh) {
+        if ($fn) {
+            open($fh, '>&', $fn);
+        }
+        elsif ($name eq 'STDOUT') {
+            $fn = fileno(STDOUT);
+            open($fh, '>&', STDOUT);
+        }
+        elsif ($name eq 'STDERR') {
+            $fn = fileno(STDERR);
+            open($fh, '>&', STDERR);
+        }
     }
 
-    return bless([$name, $fh, $fn], $class);
+    return bless([$name, $fn, $fh], $class);
 }
 
-sub DESTROY {
-    my $self = shift;
-    my ($name, $fh, $fn) = @$self;
+sub OPEN {
+    no warnings 'uninitialized';
 
-    return if $IS_END;
-
-    if ($name eq 'STDOUT') {
-        _move_io_fd($fh, \*STDOUT);
+    if ($_[0]->[0] eq 'STDOUT') {
+        untie(*STDOUT);
+        return open(STDOUT, $_[1], @_ > 2 ? $_[2] : ());
     }
-    else {
-        _move_io_fd($fh, \*STDERR);
+    elsif ($_[0]->[0] eq 'STDERR') {
+        untie(*STDERR);
+        return open(STDERR, $_[1], @_ > 2 ? $_[2] : ());
     }
-}
 
-sub _move_io_fd {
-    my ($from, $to) = @_;
-
-    my $fn = fileno($from);
-    open(my $tempfh, '>&', $from) or die "$!";
-    close($from) or die "$!";
-    open($to, '>&', $tempfh) or die "$!";
-    die "fileno mismatch!" unless $fn == fileno($to);
-
-    return ($fn, $to);
+    return;
 }
 
 sub PRINT {
     my $self = shift;
-    my ($name, $fh) = @$self;
+    my ($name) = @$self;
 
     my $output = defined($,) ? join( $,, @_) : join('', @_);
 
@@ -72,13 +61,13 @@ sub PRINT {
 
 sub FILENO {
     my $self = shift;
-    return $self->[2];
+    return $self->[1];
 }
 
 sub PRINTF {
     my $self = shift;
     my ($format, @list) = @_;
-    my ($name, $fh) = @$self;
+    my ($name) = @$self;
 
     my $output = sprintf($format, @list);
     return unless length($output);
@@ -91,27 +80,33 @@ sub PRINTF {
     );
 }
 
-sub CLOSE {
-    return 1;
-    close($_[0]->[1]) if $_[0]->[1];
-    $_[0]->[2] = undef;
-}
+sub CLOSE { 1 }
 
 sub WRITE {
     my $self = shift;
     my ($buf, $len, $offset) = @_;
-    return syswrite($self->[1], $buf) if @_ == 1;
-    return syswrite($self->[1], $buf, $len) if @_ == 2;
-    return syswrite($self->[1], $buf, $len, $offset);
+    return syswrite($self->[2], $buf) if @_ == 1;
+    return syswrite($self->[2], $buf, $len) if @_ == 2;
+    return syswrite($self->[2], $buf, $len, $offset);
 }
 
 sub BINMODE {
     my $self = shift;
-    return binmode($self->[1]) unless @_;
-    return binmode($self->[1], $_[0]);
+    return binmode($self->[2]) unless @_;
+    return binmode($self->[2], $_[0]);
 }
 
-sub autoflush { $_->[1]->autoflush(@_ ? @_ : ()) }
+sub autoflush {
+    my $self = shift;
+
+    if (@_) {
+        my ($val) = @_;
+        $self->[2]->autoflush($val);
+        $self->[3] = $val;
+    }
+
+    return $self->[3];
+}
 
 1;
 
